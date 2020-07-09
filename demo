@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charSet="utf-8" />
+</head>
+
+<body>
+    <script type="text/javascript">
+        var wsUrl = '',url = '';
+        var lockReconnect = false; //避免ws重复连接
+        //心跳检测，很有必要，原因在于浏览器端有些情况下不能感知websocket（响应超时或者说已经断开的情况）
+        //故心跳检测作用：检测客户端与服务端的连接是否能存活
+        //客户端发送消息给服务端，服务端返回消息，表示连接存活
+        var heartCheck = {
+            timeout: 5 * 60 * 1000,
+            objTimer: null,
+            reset: function () {
+                clearTimeout(this.objTimer);
+                return this;
+            },
+            start: function () {
+                this.objTimer = setTimeout(function () {
+                    ws.colse(); //前后端约定时间内收不到消息，主动关闭websocket，这里给了5分钟
+                }, this.timeout)
+            }
+        }
+        var obj = {
+            "token": "0c2e6acd-971c-4869-af45-0b8b0328a801",
+            "rad": new Date()
+        };
+        function curBrowserSupport() { //判断当前浏览器是否支持websocket
+            if (typeof WebSocket != 'undefined') {
+                return true; //支持
+            } else {
+                return false
+            }
+        }      
+        function showResult() {
+            console.log('终态，写自己的业务');
+        }
+        function queryForIE(whileTimes, url, obj, getResult) { //IE浏览器轮序
+            // whileTimes: number 轮询次数
+            // url: string 轮询链接
+            // obj: json 轮询入参 eg:{
+            //     "param1":"xxx",
+            //     "param2":"xxx"
+            // }
+            //getResult: fn 结束轮询时的回调函数
+            var Ajax = {
+                formatParams: function (obj) { //json转换 ？a=b&c=d
+                    var arr = [];
+                    for (var name in obj) {
+                        arr.push(encodeURIComponent(name) + "=" + encodeURIComponent(obj[name]));
+                    }
+                    return arr.join('&');
+                },
+                get: function (options) {
+                    options = options || {};
+                    var url = options.url;
+                    var params = Ajax.formatParams(options.data);
+                    if (window.XMLHttpRequest) { //创建 - 非IE6 - 第一步
+                        var xhr = new XMLHttpRequest();
+                    } else { //IE6及其以下版本浏览器
+                        var xhr = new ActiveXObject('Microsoft.XMLHTTP');
+                    }
+                    xhr.open('GET', url + "?" + params, false);
+                    xhr.onreadystatechange = function () {
+                        var status = xhr.status;
+                        if (xhr.readyState == 4) { // readyState == 4说明请求已完成
+                            if (xhr.status == 200 || xhr.status == 304) {
+                                options.success && options.success(xhr.responseText);
+                            } else {
+                                options.fail && options.fail(status);
+                            }
+                        }
+                    }
+                    xhr.send();
+                }
+            }
+            +function longAjax() { //建立ajax轮询
+                whileTimes--;
+                Ajax.get({
+                    url: url,
+                    data: obj,
+                    success: function (res) {
+                        var data = JSON.parse(JSON.stringify(res));
+                        if (data.questate) {
+                            getResult && getResult();
+                        } else {
+                            if (whileTimes > 0) {
+                                longAjax();
+                            } else {
+                                getResult && getResult();
+                            }
+                        }
+                    },
+                    fail: function (status) {
+                        console.log('轮询接口调用失败');
+                    }
+                })
+            }()
+            return
+        }
+
+        function createWebSocket(wsUrl) { // 实例websocket
+            try {
+                if ('WebSocket' in window) {
+                    ws = new WebSocket(wsUrl);
+                } else if ('MozWebSocket' in window) {
+                    ws = new MozWebSocket(wsUrl);
+                }
+                initEventHandle();
+            } catch (e) {
+                reconnect(wsUrl) //重连
+            }
+        }
+        // 初始化事件函数
+        function initEventHandle() {
+            ws.onopen = function (evt) {
+                heartCheck.reset().start(); //心跳检测重置
+                ws.send(obj);
+            };
+            ws.onmessage = function (evt) {
+                heartCheck.reset().start(); //拿到任何消息都说明当前连接是正常的
+                if (evt.data.success) { //该处看接口返回，需要跟后端约定****，表示已经得到终态
+                    showResult();
+                    ws.colse(); //断开链接
+                }
+            };
+            ws.onerror = function (evt) {
+                console.log('ERROR: ', evt);
+                // 0 (WebSocket.CONNECTING)
+                // 正在链接中
+                // 1 (WebSocket.OPEN)
+                // 已经链接并且可以通讯
+                // 2 (WebSocket.CLOSING)
+                // 连接正在关闭
+                // 3 (WebSocket.CLOSED)
+                // 连接已关闭或者没有链接成功
+                reconnect(wsUrl);
+            };
+            ws.onclose = function (evt) {
+                console.log('CLOSE: ', evt.reason + evt.type);
+                reconnect(wsUrl);
+            };
+            window.onbeforeunload = function () { //监听窗口关闭事件，当窗口关闭时，主动去关闭websocket连接，防止连接还没断开就关闭窗口，server端会抛异常
+                ws.close();
+            }
+        }
+
+        function reconnect(wsUrl) { // 重连
+            if (lockReconnect) return;
+            lockReconnect = true;
+            setTimeout(function () { //没连接上会一直重连，设置延迟避免请求过多
+                createWebSocket(wsUrl);
+                lockReconnect = false;
+            }, 3000);
+        }
+
+        // 调用处开始
+        function init() {
+            var result = curBrowserSupport();//根据浏览器支持情况，决定创建websocket还是走ajax轮询
+            if (result) {
+                wsUrl = "ws://127.0.0.1:8088/websocket";
+                createWebSocket(wsUrl);
+            } else {
+                url = 'http://ycetest.yeepay.com:30558/newpc/result/querystatehhhh';
+                queryForIE(30, url, obj, showResult);
+            }
+        }
+        window.addEventListener("load", init, false);
+        // 调用处结束
+
+        //发送给websocket服务的数据
+        function sendMessage() {
+            console.log('sendmessage', obj);
+            ws.send(obj);
+        }
+    </script>
+
+    <h2>WebSocket Test</h2>
+    <!-- <input id="msg" type="text" value='{"from":"lele.zhang","to":"baitao.ji","msg":"hello world"}'
+        style="width:600px" /> -->
+    <input type="button" value="SendMessage" onclick="sendMessage()" />
+    <div id="output"></div>
+</body>
+
+</html>
